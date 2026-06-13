@@ -1,7 +1,11 @@
 import { config as loadEnv } from "dotenv";
 loadEnv();
 
+// Sync log before heavy imports — visible in Cloud Run even if startup fails later.
+process.stdout.write(`[jobs:worker] Boot ${new Date().toISOString()}\n`);
+
 import { spawn, type ChildProcess } from "child_process";
+import { createServer } from "http";
 import { existsSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
@@ -392,37 +396,88 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function main() {
-  const repoRoot = process.cwd();
-  const once = process.argv.includes("--once");
+function startHealthServer(): void {
+  const port = parseInt(process.env.PORT ?? "8080", 10);
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("ok");
+  });
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`[jobs:worker] Health server on 0.0.0.0:${port}`);
+  });
+  server.on("error", (err) => {
+    console.error(`[jobs:worker] Health server error: ${err instanceof Error ? err.message : err}`);
+  });
+}
 
+function logStartupConfig(repoRoot: string): void {
+  const deploymentPath = join(repoRoot, "deployments", "testnet.json");
+  const config = {
+    SUPABASE_URL: Boolean(process.env.SUPABASE_URL),
+    SUPABASE_SERVICE_ROLE_KEY: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+    ACCOUNT_ID: Boolean(process.env.ACCOUNT_ID),
+    HEX_ENCODED_PRIVATE_KEY: Boolean(process.env.HEX_ENCODED_PRIVATE_KEY),
+    AGENT_SERVICE_URL: Boolean(process.env.AGENT_SERVICE_URL),
+    deploymentFile: existsSync(deploymentPath),
+    cwd: repoRoot,
+    node: process.version,
+  };
+  console.log(`[jobs:worker] Startup config: ${JSON.stringify(config)}`);
+}
+
+async function pollOnce(repoRoot: string, label: string): Promise<number> {
+  console.log(`[jobs:worker] ${label}`);
+  let n = 0;
+  try {
+    n = await processPendingJobs(repoRoot);
+    if (n === 0) {
+      console.log(`[jobs:worker] No pending jobs`);
+    } else {
+      console.log(`[jobs:worker] Processed ${n} job(s)`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[jobs:worker] Poll error: ${msg}`);
+  }
+  return n;
+}
+
+async function main() {
+  startHealthServer();
+  const repoRoot = process.cwd();
+  logStartupConfig(repoRoot);
+
+  const once = process.argv.includes("--once");
   console.log(
     once
-      ? "[jobs:worker] Single poll (--once), then exit"
-      : `[jobs:worker] Polling every ${POLL_MS}ms — leave this running while jobs train`
+      ? "[jobs:worker] Mode: single poll (--once)"
+      : `[jobs:worker] Mode: continuous (idle poll every ${POLL_MS}ms)`
   );
 
-  do {
-    let n = 0;
-    try {
-      n = await processPendingJobs(repoRoot);
-      if (n === 0) {
-        console.log(`[jobs:worker] No pending jobs — next check in ${POLL_MS / 1000}s`);
-      } else {
-        console.log(`[jobs:worker] Finished job poll — next check in ${POST_JOB_POLL_MS / 1000}s`);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[jobs:worker] Poll error: ${msg}`);
-    }
-    if (once) break;
-    await sleep(n === 0 ? POLL_MS : POST_JOB_POLL_MS);
-  } while (true);
+  // First poll runs immediately — no initial sleep.
+  let n = await pollOnce(repoRoot, "Immediate poll on startup");
+  if (once) return;
+
+  while (true) {
+    const waitMs = n === 0 ? POLL_MS : POST_JOB_POLL_MS;
+    console.log(`[jobs:worker] Next poll in ${waitMs / 1000}s`);
+    await sleep(waitMs);
+    n = await pollOnce(repoRoot, "Scheduled poll");
+  }
 }
 
 if (require.main === module) {
+  process.on("uncaughtException", (err) => {
+    console.error("[jobs:worker] Uncaught exception:", err);
+    process.exit(1);
+  });
+  process.on("unhandledRejection", (reason) => {
+    console.error("[jobs:worker] Unhandled rejection:", reason);
+    process.exit(1);
+  });
+
   main().catch((err) => {
-    console.error(err);
+    console.error("[jobs:worker] Fatal:", err);
     process.exit(1);
   });
 }
