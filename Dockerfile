@@ -32,4 +32,4 @@ RUN npm run compile && mkdir -p data output deployments
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "node -e \"require('http').createServer((_,r)=>{r.writeHead(200);r.end('ok')}).listen(process.env.PORT||8080,'0.0.0.0')\" & mkdir -p deployments data output; if [ -n \"$DEPLOYMENT_JSON\" ]; then printf '%s' \"$DEPLOYMENT_JSON\" > deployments/testnet.json; fi; exec npm run jobs:worker"]
+CMD ["sh", "-c", "echo \"[pocu-worker] container start $(date -u +%Y-%m-%dT%H:%M:%SZ)\" && mkdir -p deployments data output && if [ -n \"$DEPLOYMENT_JSON\" ]; then printf '%s' \"$DEPLOYMENT_JSON\" > deployments/testnet.json; fi && exec npm run jobs:worker"]
