@@ -1,5 +1,6 @@
 import { Contract, Signer, keccak256, solidityPacked } from "ethers";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
 import { DeploymentAddresses } from "../types";
 import { compileMlpProgram, jobIdFromData, jobIdFromRunId } from "./compiler";
 import { DEFAULT_FRAUD_MLP, MlpModelSpec } from "./models/mlp-spec";
@@ -164,9 +165,9 @@ export async function runCpuTraining(params: {
     params.log?.info(`Model manifest pinned (final weights + metadata)`);
   }
 
-  mkdirSync("output", { recursive: true });
   const manifestPath =
     process.env.MANIFEST_PATH ?? "output/cpu_model_manifest.json";
+  mkdirSync(dirname(manifestPath), { recursive: true });
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
   return {
