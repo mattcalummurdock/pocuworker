@@ -5,11 +5,12 @@ import os
 import re
 import subprocess
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from kaggle_client import download_dataset, inspect_dataset, search_datasets
-from supabase_client import create_job, get_job
+from supabase_client import create_job, get_job, get_supabase, upload_job_prepared_files
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ARCH_PATH = Path(__file__).resolve().parent / "architectures.json"
@@ -79,6 +80,40 @@ def inspect_kaggle_dataset(dataset_ref: str) -> dict[str, Any]:
     return {"files": files, "total_mb": total_mb, "ok": total_mb <= 500}
 
 
+def _hardhat_bin() -> str:
+    is_win = os.name == "nt"
+    name = "hardhat.cmd" if is_win else "hardhat"
+    path = REPO_ROOT / "node_modules" / ".bin" / name
+    if path.is_file():
+        return str(path)
+    return "npx.cmd" if is_win else "npx"
+
+
+def _parse_preprocess_json(stdout: str, stderr: str) -> dict[str, Any]:
+    """Hardhat may log to stdout/stderr; find the JSON result line."""
+    for stream in (stdout, stderr):
+        if not stream:
+            continue
+        for line in reversed(stream.strip().splitlines()):
+            stripped = line.strip()
+            if not stripped.startswith("{"):
+                continue
+            try:
+                data = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict) and data.get("ok") is False:
+                raise RuntimeError(data.get("error") or "Preprocess failed")
+            return data
+    out_tail = (stdout or "").strip()[-1000:]
+    err_tail = (stderr or "").strip()[-1000:]
+    raise RuntimeError(
+        "Preprocess produced no JSON output "
+        f"(stdout empty={not (stdout or '').strip()}, stderr empty={not (stderr or '').strip()}). "
+        f"stdout tail: {out_tail!r} stderr tail: {err_tail!r}"
+    )
+
+
 def download_and_prepare(
     dataset_ref: str,
     architecture_id: str,
@@ -100,20 +135,25 @@ def download_and_prepare(
         env["TARGET_COLUMN"] = target_column
 
     is_win = os.name == "nt"
-    npx = "npx.cmd" if is_win else "npx"
+    hardhat = _hardhat_bin()
+    cmd = (
+        [hardhat, "run", "scripts/preprocess-tabular.ts"]
+        if hardhat.endswith(("hardhat", "hardhat.cmd"))
+        else [hardhat, "hardhat", "run", "scripts/preprocess-tabular.ts"]
+    )
     proc = subprocess.run(
-        [npx, "hardhat", "run", "scripts/preprocess-tabular.ts"],
+        cmd,
         cwd=str(REPO_ROOT),
         env=env,
         capture_output=True,
         text=True,
-        shell=is_win,
+        shell=is_win and hardhat.startswith("npx"),
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "preprocess failed").strip()
         raise RuntimeError(f"Preprocess failed: {detail[-2000:]}")
 
-    result = json.loads(proc.stdout.strip().split("\n")[-1])
+    result = _parse_preprocess_json(proc.stdout or "", proc.stderr or "")
     return {
         "job_id": jid,
         "dataset_ref": dataset_ref,
@@ -141,7 +181,7 @@ def trigger_training_job(
 ) -> dict[str, Any]:
     arch = get_architecture(architecture_id)
     job_uuid = prepared.get("job_id") or str(uuid.uuid4())
-    manifest_path = str(REPO_ROOT / "output" / f"{job_uuid}_manifest.json")
+    manifest_path = f"output/{job_uuid}_manifest.json"
 
     row: dict[str, Any] = {
         "id": job_uuid,
@@ -178,6 +218,22 @@ def trigger_training_job(
             }
         )
     created = create_job(row)
+    try:
+        upload_job_prepared_files(job_uuid, prepared["metadata_path"])
+    except Exception as exc:
+        err = f"Could not upload prepared data to Supabase storage: {exc}"
+        print(f"[agent] ERROR: {err}")
+        try:
+            get_supabase().table("training_jobs").update(
+                {
+                    "status": "failed",
+                    "error_message": err,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("id", job_uuid).execute()
+        except Exception:
+            pass
+        raise RuntimeError(err) from exc
     return {
         "job_id": created["id"],
         "status": "pending",
@@ -190,4 +246,8 @@ def get_training_job_status(job_id: str) -> dict[str, Any]:
     job = get_job(job_id)
     if not job:
         return {"error": "Job not found"}
+    logs = str(job.get("logs") or "")
+    if logs:
+        job = dict(job)
+        job["logs"] = logs[-400:] if len(logs) > 400 else logs
     return job
