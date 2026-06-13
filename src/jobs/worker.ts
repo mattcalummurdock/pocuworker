@@ -6,7 +6,7 @@ process.stdout.write(`[jobs:worker] Boot ${new Date().toISOString()}\n`);
 
 import { spawn, type ChildProcess } from "child_process";
 import { createServer } from "http";
-import { existsSync, readFileSync, statSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import WebSocket from "ws";
@@ -26,6 +26,8 @@ export const FIXED_TRAIN_ENV: Record<string, string> = {
 const STALE_RUNNING_JOB_MS = parseInt(process.env.STALE_RUNNING_JOB_MS ?? "90000", 10);
 const MINT_FETCH_TIMEOUT_MS = parseInt(process.env.MINT_FETCH_TIMEOUT_MS ?? "120000", 10);
 const POST_JOB_POLL_MS = parseInt(process.env.POST_JOB_POLL_MS ?? "3000", 10);
+const JOB_DATA_BUCKET = process.env.JOB_DATA_BUCKET ?? "job-data";
+const TRAIN_HEARTBEAT_MS = parseInt(process.env.TRAIN_HEARTBEAT_MS ?? "30000", 10);
 
 /** Set while this process is inside runTrainingJob (avoids ghost DB "running" blocking forever). */
 let activeJobInProcess: string | null = null;
@@ -65,6 +67,92 @@ function getSupabase(): SupabaseClient {
       transport: WebSocket as unknown as typeof globalThis.WebSocket,
     },
   });
+}
+
+async function downloadJobPreparedData(
+  sb: SupabaseClient,
+  job: TrainingJobRow,
+  repoRoot: string
+): Promise<string> {
+  const dataDir = join(repoRoot, "data", job.id);
+  const localMeta = join(dataDir, "meta.json");
+  const localCsv = join(dataDir, "prepared.csv");
+
+  if (existsSync(localMeta) && existsSync(localCsv)) {
+    console.log(`[jobs:worker] Using cached prepared data for ${job.id}`);
+    return localMeta;
+  }
+
+  if (job.prepared_meta_path && existsSync(job.prepared_meta_path)) {
+    console.log(`[jobs:worker] Using shared prepared path for ${job.id}`);
+    return job.prepared_meta_path;
+  }
+
+  console.log(
+    `[jobs:worker] Downloading prepared data for ${job.id} from ${JOB_DATA_BUCKET} storage`
+  );
+  mkdirSync(dataDir, { recursive: true });
+
+  const { data: metaBlob, error: metaErr } = await sb.storage
+    .from(JOB_DATA_BUCKET)
+    .download(`${job.id}/meta.json`);
+  if (metaErr || !metaBlob) {
+    throw new Error(
+      `Prepared data missing on worker and not in Supabase storage (${JOB_DATA_BUCKET}/${job.id}/). ` +
+        "Create the job-data bucket, redeploy the agent, and queue a new job."
+    );
+  }
+
+  const { data: csvBlob, error: csvErr } = await sb.storage
+    .from(JOB_DATA_BUCKET)
+    .download(`${job.id}/prepared.csv`);
+  if (csvErr || !csvBlob) {
+    throw new Error(`Prepared CSV missing in Supabase storage for job ${job.id}`);
+  }
+
+  const metaText = await metaBlob.text();
+  writeFileSync(localMeta, metaText);
+  writeFileSync(localCsv, Buffer.from(await csvBlob.arrayBuffer()));
+
+  const meta = JSON.parse(metaText) as Record<string, unknown>;
+  meta.outputCsvPath = localCsv;
+  writeFileSync(localMeta, JSON.stringify(meta, null, 2));
+
+  console.log(`[jobs:worker] Prepared data ready at ${localMeta}`);
+  return localMeta;
+}
+
+function pipeTrainOutput(
+  sb: SupabaseClient,
+  jobId: string,
+  stream: NodeJS.ReadableStream | null,
+  label: "stdout" | "stderr"
+): void {
+  stream?.on("data", (chunk) => {
+    const text = chunk.toString().trimEnd();
+    if (!text) return;
+    for (const line of text.split("\n")) {
+      console.log(`[jobs:worker][train][${label}] ${line}`);
+    }
+    void appendLog(sb, jobId, text);
+  });
+}
+
+function resolveHardhatCommand(repoRoot: string): { cmd: string; args: string[]; shell: boolean } {
+  const isWin = process.platform === "win32";
+  const hardhatBin = join(repoRoot, "node_modules", ".bin", isWin ? "hardhat.cmd" : "hardhat");
+  if (existsSync(hardhatBin)) {
+    return {
+      cmd: hardhatBin,
+      args: ["run", "scripts/train.ts", "--network", "testnet"],
+      shell: isWin,
+    };
+  }
+  return {
+    cmd: isWin ? "npx.cmd" : "npx",
+    args: ["hardhat", "run", "scripts/train.ts", "--network", "testnet"],
+    shell: isWin,
+  };
 }
 
 async function appendLog(sb: SupabaseClient, jobId: string, line: string): Promise<void> {
@@ -238,8 +326,12 @@ export async function runTrainingJob(job: TrainingJobRow, repoRoot: string): Pro
     return;
   }
 
+  console.log(`[jobs:worker] Claimed job ${job.id} (${job.use_case}) — preparing training`);
+
   try {
+    const preparedMetaPath = await downloadJobPreparedData(sb, job, repoRoot);
     await appendLog(sb, job.id, `[worker] Starting train for ${job.use_case}`);
+    console.log(`[jobs:worker] Starting train for ${job.use_case} (job ${job.id})`);
 
     const env: Record<string, string> = {
       ...Object.fromEntries(
@@ -251,11 +343,8 @@ export async function runTrainingJob(job: TrainingJobRow, repoRoot: string): Pro
       ARCHITECTURE_ID: job.architecture_id,
       MANIFEST_PATH: manifestPath,
       JOB_ID: job.id,
+      PREPARED_META_PATH: preparedMetaPath,
     };
-
-    if (job.prepared_meta_path) {
-      env.PREPARED_META_PATH = job.prepared_meta_path;
-    }
     if (job.user_account_id) env.USER_ACCOUNT_ID = job.user_account_id;
     if (job.ap2_mandate_hash) env.AP2_MANDATE_HASH = job.ap2_mandate_hash;
     if (job.acp_order_id) env.ACP_ORDER_ID = job.acp_order_id;
@@ -264,32 +353,40 @@ export async function runTrainingJob(job: TrainingJobRow, repoRoot: string): Pro
     if (job.input_dim != null) env.INPUT_DIM = String(job.input_dim);
     if (job.num_classes != null) env.NUM_CLASSES = String(job.num_classes);
 
-    const isWin = process.platform === "win32";
-    const cmd = isWin ? "npx.cmd" : "npx";
-    const child = spawn(
-      cmd,
-      ["hardhat", "run", "scripts/train.ts", "--network", "testnet"],
-      {
-        cwd: repoRoot,
-        env,
-        shell: isWin,
-      }
-    );
+    const { cmd, args, shell } = resolveHardhatCommand(repoRoot);
+    console.log(`[jobs:worker] Spawning: ${cmd} ${args.join(" ")}`);
 
-    child.stdout?.on("data", (d) => {
-      void appendLog(sb, job.id, d.toString().trimEnd());
+    const child = spawn(cmd, args, {
+      cwd: repoRoot,
+      env,
+      shell,
     });
-    child.stderr?.on("data", (d) => {
-      void appendLog(sb, job.id, d.toString().trimEnd());
+
+    child.on("error", (err) => {
+      console.error(`[jobs:worker] Train process error for ${job.id}: ${err.message}`);
     });
+
+    pipeTrainOutput(sb, job.id, child.stdout, "stdout");
+    pipeTrainOutput(sb, job.id, child.stderr, "stderr");
+
+    const heartbeat = setInterval(() => {
+      console.log(`[jobs:worker] Training still running for job ${job.id}...`);
+    }, TRAIN_HEARTBEAT_MS);
 
     let childExited = false;
     const manifestPromise = waitForStableFile(manifestPath, 2000, 3_600_000, 500, () => childExited).catch(
       () => null
     );
 
-    const exitCode = await waitForChildExit(child);
+    let exitCode = 1;
+    try {
+      exitCode = await waitForChildExit(child);
+    } finally {
+      clearInterval(heartbeat);
+    }
     childExited = true;
+
+    console.log(`[jobs:worker] Train process exited with code ${exitCode} (job ${job.id})`);
 
     if (exitCode !== 0) {
       await manifestPromise;
@@ -330,8 +427,10 @@ export async function runTrainingJob(job: TrainingJobRow, repoRoot: string): Pro
       .eq("id", job.id);
 
     await appendLog(sb, job.id, `[worker] Training done — requesting agent HTS mint`);
+    console.log(`[jobs:worker] Training done for ${job.id} — calling agent mint`);
 
     const agentUrl = process.env.AGENT_SERVICE_URL ?? "http://127.0.0.1:8000";
+    console.log(`[jobs:worker] POST ${agentUrl}/jobs/${job.id}/mint-model-nft`);
     const mintRes = await fetchMintWithTimeout(`${agentUrl}/jobs/${job.id}/mint-model-nft`, job.id);
     if (!mintRes.ok) {
       const errText = await mintRes.text();
