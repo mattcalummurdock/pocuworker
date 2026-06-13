@@ -9,8 +9,7 @@
 
 FROM node:20-bookworm-slim
 
-ENV NODE_ENV=production \
-    PORT=8080 \
+ENV PORT=8080 \
     JOB_WORKER_POLL_MS=15000
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -20,7 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+# Hardhat is a devDependency — must install dev deps (NODE_ENV=production skips them).
+RUN npm ci --include=dev
 
 COPY hardhat.config.ts tsconfig.json ./
 COPY contracts ./contracts
@@ -28,7 +28,7 @@ COPY scripts/train.ts ./scripts/train.ts
 COPY scripts/preprocess-tabular.ts ./scripts/preprocess-tabular.ts
 COPY src ./src
 
-RUN npx hardhat compile && mkdir -p data output deployments
+RUN npm run compile && mkdir -p data output deployments
 
 EXPOSE 8080
 
