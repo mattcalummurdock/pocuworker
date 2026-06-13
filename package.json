@@ -13,8 +13,8 @@
     "preprocess-tabular": "hardhat run scripts/preprocess-tabular.ts",
     "export-architectures": "ts-node scripts/export-architectures.ts",
     "send-hbar": "ts-node scripts/send-hbar.ts",
-    "jobs:worker": "ts-node src/jobs/worker.ts",
-    "jobs:worker:once": "ts-node src/jobs/worker.ts --once",
+    "jobs:worker": "node --require ts-node/register/transpile-only src/jobs/worker.ts",
+    "jobs:worker:once": "node --require ts-node/register/transpile-only src/jobs/worker.ts --once",
     "dev:web": "cd web && npm run dev",
     "dev:agent": "python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000 --app-dir agent",
     "dev:all": "concurrently \"npm run dev:web\" \"npm run dev:agent\" \"npm run jobs:worker\""
