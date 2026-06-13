@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { parse } from "csv-parse/sync";
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
-import { dirname } from "path";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { dirname, join } from "path";
 import { floatToFixed } from "./fixed-point";
 import { TabularSample } from "./types";
 import {
@@ -262,15 +262,24 @@ export function loadPreparedSamples(metaPath: string): {
   meta: Record<string, unknown>;
 } {
   const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as Record<string, unknown>;
-  const csvPath = String(meta.outputCsvPath ?? "");
-  const preparedPath =
-    csvPath ||
-    dirname(metaPath) + `/${String(meta.jobId)}_prepared.csv`;
+  const metaDir = dirname(metaPath);
+  const jobId = String(meta.jobId ?? "");
+  const csvPath = String(meta.outputCsvPath ?? "").trim();
 
-  const content = readFileSync(
-    preparedPath.includes("_prepared") ? preparedPath : `${dirname(metaPath)}/${meta.jobId}_prepared.csv`,
-    "utf-8"
-  );
+  const candidates = [
+    csvPath,
+    join(metaDir, "prepared.csv"),
+    jobId ? join(metaDir, `${jobId}_prepared.csv`) : "",
+  ].filter(Boolean);
+
+  const preparedPath = candidates.find((p) => existsSync(p));
+  if (!preparedPath) {
+    throw new Error(
+      `Prepared CSV not found for ${metaPath}. Tried: ${candidates.join(", ")}`
+    );
+  }
+
+  const content = readFileSync(preparedPath, "utf-8");
   const records = parse(content, { columns: true, skip_empty_lines: true }) as Record<
     string,
     string
