@@ -79,6 +79,11 @@ async function downloadJobPreparedData(
   const localCsv = join(dataDir, "prepared.csv");
 
   if (existsSync(localMeta) && existsSync(localCsv)) {
+    const meta = JSON.parse(readFileSync(localMeta, "utf-8")) as Record<string, unknown>;
+    if (meta.outputCsvPath !== localCsv) {
+      meta.outputCsvPath = localCsv;
+      writeFileSync(localMeta, JSON.stringify(meta, null, 2));
+    }
     console.log(`[jobs:worker] Using cached prepared data for ${job.id}`);
     return localMeta;
   }
