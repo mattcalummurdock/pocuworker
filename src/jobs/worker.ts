@@ -7,7 +7,7 @@ process.stdout.write(`[jobs:worker] Boot ${new Date().toISOString()}\n`);
 import { spawn, type ChildProcess } from "child_process";
 import { createServer } from "http";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
-import { join } from "path";
+import { join, basename } from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import WebSocket from "ws";
 
@@ -160,6 +160,17 @@ function resolveHardhatCommand(repoRoot: string): { cmd: string; args: string[];
   };
 }
 
+/** Always use a path under this worker's repo — ignore agent/container absolute paths in DB. */
+export function resolveWorkerManifestPath(
+  jobId: string,
+  repoRoot: string,
+  storedPath?: string
+): string {
+  const name = storedPath ? basename(storedPath.replace(/\\/g, "/")) : `${jobId}_manifest.json`;
+  const fileName = name.endsWith("_manifest.json") ? name : `${jobId}_manifest.json`;
+  return join(repoRoot, "output", fileName);
+}
+
 async function appendLog(sb: SupabaseClient, jobId: string, line: string): Promise<void> {
   const { data } = await sb.from("training_jobs").select("logs").eq("id", jobId).single();
   const prev = (data?.logs as string) ?? "";
@@ -241,7 +252,7 @@ export async function reconcileStaleRunningJobs(
   const now = Date.now();
   let recovered = 0;
   for (const job of (running ?? []) as TrainingJobRow[]) {
-    const manifestPath = job.manifest_path ?? join(repoRoot, "output", `${job.id}_manifest.json`);
+    const manifestPath = resolveWorkerManifestPath(job.id, repoRoot, job.manifest_path);
     if (manifestExists(manifestPath)) continue;
 
     const updatedAt = job.updated_at ?? job.created_at;
@@ -314,7 +325,8 @@ async function fetchMintWithTimeout(url: string, jobId: string): Promise<Respons
 
 export async function runTrainingJob(job: TrainingJobRow, repoRoot: string): Promise<void> {
   const sb = getSupabase();
-  const manifestPath = job.manifest_path ?? join(repoRoot, "output", `${job.id}_manifest.json`);
+  const manifestPath = resolveWorkerManifestPath(job.id, repoRoot, job.manifest_path);
+  mkdirSync(join(repoRoot, "output"), { recursive: true });
   activeJobInProcess = job.id;
 
   const { data: claimed, error: claimErr } = await sb
