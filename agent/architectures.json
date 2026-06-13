@@ -1,0 +1,204 @@
+[
+  {
+    "id": "arch-low-8",
+    "name": "Low 8",
+    "tier": "low",
+    "description": "Single hidden layer (8). Fastest testnet runs.",
+    "layers": [
+      {
+        "size": 8,
+        "activation": "relu"
+      }
+    ],
+    "optimizer": "sgd",
+    "loss": "cross_entropy",
+    "taskType": "classification",
+    "maxInputDim": 32,
+    "maxNumClasses": 10
+  },
+  {
+    "id": "arch-low-16",
+    "name": "Low 16",
+    "tier": "low",
+    "description": "Single hidden layer (16). Low TX cost.",
+    "layers": [
+      {
+        "size": 16,
+        "activation": "relu"
+      }
+    ],
+    "optimizer": "sgd",
+    "loss": "cross_entropy",
+    "taskType": "classification",
+    "maxInputDim": 32,
+    "maxNumClasses": 10
+  },
+  {
+    "id": "arch-low-16-8",
+    "name": "Low 16→8",
+    "tier": "low",
+    "description": "Two hidden layers (16→8). Balanced low-tier.",
+    "layers": [
+      {
+        "size": 16,
+        "activation": "relu"
+      },
+      {
+        "size": 8,
+        "activation": "relu"
+      }
+    ],
+    "optimizer": "sgd",
+    "loss": "cross_entropy",
+    "taskType": "classification",
+    "maxInputDim": 64,
+    "maxNumClasses": 10
+  },
+  {
+    "id": "arch-low-mse-16",
+    "name": "Low 16→8 Regression",
+    "tier": "low",
+    "description": "Regression head with MSE loss.",
+    "layers": [
+      {
+        "size": 16,
+        "activation": "relu"
+      },
+      {
+        "size": 8,
+        "activation": "relu"
+      }
+    ],
+    "optimizer": "sgd",
+    "loss": "mse",
+    "taskType": "regression",
+    "maxInputDim": 32,
+    "maxNumClasses": 1
+  },
+  {
+    "id": "arch-mid-32-16",
+    "name": "Mid 32→16",
+    "tier": "mid",
+    "description": "Default mid-tier classifier (32→16). Good default.",
+    "layers": [
+      {
+        "size": 32,
+        "activation": "relu"
+      },
+      {
+        "size": 16,
+        "activation": "relu"
+      }
+    ],
+    "optimizer": "adam",
+    "loss": "cross_entropy",
+    "taskType": "classification",
+    "maxInputDim": 64,
+    "maxNumClasses": 10
+  },
+  {
+    "id": "arch-mid-64-32",
+    "name": "Mid 64→32",
+    "tier": "mid",
+    "description": "Larger mid-tier classifier (64→32).",
+    "layers": [
+      {
+        "size": 64,
+        "activation": "relu"
+      },
+      {
+        "size": 32,
+        "activation": "relu"
+      }
+    ],
+    "optimizer": "adam",
+    "loss": "cross_entropy",
+    "taskType": "classification",
+    "maxInputDim": 64,
+    "maxNumClasses": 10
+  },
+  {
+    "id": "arch-mid-24-12-3",
+    "name": "Mid 24→12 (≤3 class)",
+    "tier": "mid",
+    "description": "Multiclass up to 3 labels.",
+    "layers": [
+      {
+        "size": 24,
+        "activation": "relu"
+      },
+      {
+        "size": 12,
+        "activation": "relu"
+      }
+    ],
+    "optimizer": "adam",
+    "loss": "cross_entropy",
+    "taskType": "classification",
+    "maxInputDim": 32,
+    "maxNumClasses": 3
+  },
+  {
+    "id": "arch-mid-32-16-5",
+    "name": "Mid 32→16 (≤5 class)",
+    "tier": "mid",
+    "description": "Multiclass up to 5 labels.",
+    "layers": [
+      {
+        "size": 32,
+        "activation": "relu"
+      },
+      {
+        "size": 16,
+        "activation": "relu"
+      }
+    ],
+    "optimizer": "adam",
+    "loss": "cross_entropy",
+    "taskType": "classification",
+    "maxInputDim": 64,
+    "maxNumClasses": 5
+  },
+  {
+    "id": "arch-mid-mse-24-12",
+    "name": "Mid 24→12 Regression",
+    "tier": "mid",
+    "description": "Adam regression with MSE loss.",
+    "layers": [
+      {
+        "size": 24,
+        "activation": "relu"
+      },
+      {
+        "size": 12,
+        "activation": "relu"
+      }
+    ],
+    "optimizer": "adam",
+    "loss": "mse",
+    "taskType": "regression",
+    "maxInputDim": 64,
+    "maxNumClasses": 1
+  },
+  {
+    "id": "arch-mid-wide-48",
+    "name": "Mid 48→24 Wide",
+    "tier": "mid",
+    "description": "Wide input (up to 128 features).",
+    "layers": [
+      {
+        "size": 48,
+        "activation": "relu"
+      },
+      {
+        "size": 24,
+        "activation": "relu"
+      }
+    ],
+    "optimizer": "adam",
+    "loss": "cross_entropy",
+    "taskType": "classification",
+    "maxInputDim": 128,
+    "maxNumClasses": 10
+  }
+]
